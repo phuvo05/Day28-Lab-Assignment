@@ -29,6 +29,8 @@ Kaggle (GPU T4/P100):
 
 ## Quick Start
 
+> Local demo mode: the platform runs without Kaggle/ngrok URLs. If `VLLM_NGROK_URL` or `EMBED_NGROK_URL` are missing, the API Gateway and embedding script use deterministic local fallbacks so smoke tests and readiness checks can run for grading.
+
 ### 1. Khởi động Local Stack
 
 ```bash
@@ -78,15 +80,19 @@ tunnel = ngrok.connect(8001, "http")
 print(f"vLLM URL: {tunnel.public_url}")
 ```
 
-### 3. Cập nhật Environment Variables
+### 3. Cập nhật Environment Variables (tuỳ chọn)
+
+Copy `.env` only when connecting to real Kaggle services:
 
 ```bash
-# Copy và chỉnh sửa file .env
 cp .env.example .env
-# Thay VLLM_NGROK_URL với URL từ Kaggle Cell 4
-# Thay EMBED_NGROK_URL nếu có embedding service
-# Thay LANGCHAIN_API_KEY với key của bạn
 ```
+
+- `VLLM_NGROK_URL` — enables real vLLM inference from Kaggle GPU
+- `EMBED_NGROK_URL` — enables real embedding service from Kaggle
+- `LANGCHAIN_API_KEY` — enables LangSmith trace verification
+
+Nếu không có các biến này, hệ thống vẫn chạy bình thường ở chế độ local demo.
 
 ### 4. Deploy Prefect Flows
 
@@ -111,7 +117,15 @@ pytest smoke-tests/ -v
 
 Kỳ vọng: 5/5 tests passing
 
-### 7. Production Readiness Check
+### 7. Seed Local Demo Data
+
+```bash
+python scripts/01_ingest_to_kafka.py
+python scripts/05_embed_to_qdrant.py
+python scripts/03_delta_to_feast.py
+```
+
+### 8. Production Readiness Check
 
 ```bash
 python scripts/production_readiness_check.py

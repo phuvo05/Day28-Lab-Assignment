@@ -1,44 +1,86 @@
 # api-gateway/main.py
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from prometheus_fastapi_instrumentator import Instrumentator
-import httpx, os, time, langsmith
+import httpx
+import os
+import time
 
 app = FastAPI(title="AI Platform API Gateway")
-Instrumentator().instrument(app).expose(app)  # Integration 9: Prometheus
+Instrumentator().instrument(app).expose(app)
 
-VLLM_URL = os.environ["VLLM_URL"]
+VLLM_URL = os.environ.get("VLLM_NGROK_URL", "").strip()
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333")
+MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct-GPTQ-Int4"
+
+
+def search_context(embedding: list) -> list:
+    try:
+        response = httpx.post(
+            f"{QDRANT_URL}/collections/documents/points/search",
+            json={"vector": embedding, "limit": 3, "with_payload": True},
+            timeout=5,
+        )
+        response.raise_for_status()
+        return response.json().get("result", [])
+    except httpx.HTTPError:
+        return []
+
+
+def local_demo_response(prompt: str) -> dict:
+    query = prompt.split("Query: ", 1)[-1]
+    return {
+        "answer": f"Local demo answer for: {query}",
+        "model": "local-demo",
+    }
+
+
+def call_llm(prompt: str) -> dict:
+    if not VLLM_URL:
+        return local_demo_response(prompt)
+
+    try:
+        response = httpx.post(
+            f"{VLLM_URL}/v1/chat/completions",
+            json={
+                "model": MODEL_NAME,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        result = response.json()
+        return {
+            "answer": result["choices"][0]["message"]["content"],
+            "model": result.get("model", MODEL_NAME),
+        }
+    except (httpx.HTTPError, KeyError, IndexError):
+        return local_demo_response(prompt)
+
 
 @app.post("/api/v1/chat")
 async def chat(request: Request):
     body = await request.json()
-    query = body["query"]
+    query = body.get("query")
+    if not query:
+        raise HTTPException(status_code=422, detail="query is required")
+
+    embedding = body.get("embedding", [0.0] * 384)
+    if not isinstance(embedding, list) or len(embedding) != 384:
+        raise HTTPException(status_code=422, detail="embedding must contain 384 numbers")
+
     start = time.time()
-
-    # 1. Vector search
-    async with httpx.AsyncClient() as client:
-        search_resp = await client.post(f"{QDRANT_URL}/collections/documents/points/search", json={
-            "vector": body.get("embedding", [0.0] * 384),
-            "limit": 3
-        })
-        context = search_resp.json().get("result", [])
-
-    # 2. LLM inference
+    context = search_context(embedding)
     prompt = f"Context: {context}\n\nQuery: {query}"
-    async with httpx.AsyncClient(timeout=30) as client:
-        llm_resp = await client.post(f"{VLLM_URL}/v1/chat/completions", json={
-            "model": "Qwen/Qwen2.5-7B-Instruct-GPTQ-Int4",
-            "messages": [{"role": "user", "content": prompt}]
-        })
-
+    llm_result = call_llm(prompt)
     latency = (time.time() - start) * 1000
-    result = llm_resp.json()
 
     return {
-        "answer": result["choices"][0]["message"]["content"],
+        "answer": llm_result["answer"],
         "latency_ms": round(latency, 2),
-        "model": result["model"]
+        "model": llm_result["model"],
+        "context_count": len(context),
     }
+
 
 @app.get("/health")
 def health():

@@ -19,4 +19,4 @@ sample_data = [
     {"id": "doc_002", "text": "Kafka to Airflow pipeline", "timestamp": time.time()},
 ]
 ingest_data(sample_data)
-print("Integration 1 OK: Data → Kafka")
+print("Integration 1 OK: Data -> Kafka")
